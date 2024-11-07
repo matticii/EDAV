@@ -1,0 +1,277 @@
+---
+title: "EDAV Community Contribution"
+author: Matt Xi (yx2933), Jeremy Qu (jq2406)
+format:
+  html:
+    embed-resources: true
+execute: 
+  echo: true
+---
+
+
+## Introduction
+
+In many cases, using traditional plots such as scatterplot, boxplot, histograms are not enough, as we may want to harness the inherent spatial context of data. Geospatial visualization helps us understand where patterns and phenomena occur, adding an important dimension that a histogram or similar chart cannot convey. By mapping data, we can recognize spatial relationships, distribution trends, and potential clustering effects across locations—insights critical for decision-making in fields like urban planning, environmental studies, and public health. This spatial perspective often reveals hidden correlations, inequities, or opportunities that would be lost when only considering the numerical summaries or non-spatial charts. The combination of sf for data handling and tmap for thematic mapping provides the flexibility to not only analyze but also communicate spatial insights in a more intuitive way. This allows stakeholders to visualize complex spatial dynamics at a glance, facilitating more informed and effective decision-making processes.
+
+In this tutorial, we will first introduce the sf and tmap package, and explain the capabilites of geospatial visualization in r using a few examples.
+
+
+## 1. Understanding SF and tmap
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(janitor)
+library(sf)
+library(tmap)
+library(spdep)
+library(RColorBrewer)
+```
+
+Spatial Data:
+
+Reads spatial data from various file formats (e.g., shapefiles, GeoJSON, etc.).
+
+geometric types: points, lines, polygons
+attributes
+operations: distance, intersection, buffer, union, containment
+
+The sf package (short for Simple Features) is an essential tool for handling spatial data in R. It implements simple features as described in the OGC (Open Geospatial Consortium) standard, enabling the manipulation and analysis of spatial objects such as points, lines, and polygons.
+
+Coordinate Reference System (CRS) defines how spatial data is projected and represented on the Earth's surface
+
+
+The tmap package is designed for creating thematic maps in R and is especially useful for visualization of sf spatial objects. It offers both static and interactive map visualizations, making it a versatile tool for presenting spatial data.
+
+```{r loading data}
+Sys.setenv(SHAPE_RESTORE_SHX = "YES")
+
+# Load LSOA Boundaries (from ONS Open Geography Portal) This includes the entire uk so we want to clip it to just london
+lsoa_shp <- read_sf("boundaries/LSOA_2021_EW_BGC.shp") |>
+  st_transform(27700)
+
+# Load Car Ownership 2021 Data (from NOMIS)
+car_ownership <- read_csv("car_ownership_2021.csv")
+
+# Load Method of Travel to Work 2021 Data (from NOMIS)
+method_of_travel <- read_csv("method_to_work_2021.csv")
+
+# Load London Tube & Train Stations (from TFL)
+london_stations <- read_sf("tfl_stations.kml") |>
+  st_transform(27700)
+
+# Creating column for car ownership
+car_ownership$car_owners <- 100-car_ownership$no_cars_or_vans
+
+# Merging Car Ownership to lsoa_sdf for analysis 
+car_ownership_sdf <- merge(lsoa_shp, car_ownership, by.x = "LSOA21CD",
+                           by.y = "area_code")
+```
+
+Talk about how to build a basic geospatial map
+- tmap_mode("plot")
+- to create a basic tmap, we need tm_shape and tm_polygons
+```{r car ownership}
+
+# Drawing a basic map
+tm_shape(car_ownership_sdf) +
+tm_polygons("gray", border.col = "black", lwd = 0.1)
+```
+
+- similar to ggplot, we can stack multiple layers on top of each other, this will help us in plotting the map (eg add north arrow and scale bars)
+
+```{r car ownership}
+
+# add shape of the basemap as grey
+tm_shape(car_ownership_sdf) +
+tm_polygons("gray", border.col = "gray") +
+# add shape of features as 
+tm_shape(car_ownership_sdf) +
+tm_polygons(
+  col = "car_owners", n = 7, style = "quantile",
+  palette = "Reds", border.col = "white",lty = "blank",
+  title = "% Car Ownership"
+) +
+# add North arrow
+tm_compass(
+  type = "arrow",
+  position = c("left", "top")
+) +
+# add scale bar
+tm_scale_bar(
+  breaks = c(0, 5, 10, 15, 20),
+  position = c("left", "bottom")
+ ) +
+# add title
+tm_layout(
+  frame = FALSE,
+  main.title = "Car Ownership in London, 2021",
+  main.title.fontface = 2,
+  fontfamily = "Helvetica",
+  legend.outside = TRUE,
+  legend.position = c("left", "top"),
+  legend.title.size = 1,
+  legend.title.fontface = 2
+) 
+```
+
+
+
+
+## 2. Point layer analysis:  (1.5min)
+Being able to plot the map is also able to help us understand the geospatial overlaps
+In this case, we can also plot points of train stations on top of car ownership map to visualize if areas with high car ownership indeed do not have train stations.
+
+```{r fig.width=10}
+# Adding basemap
+tm_shape(car_ownership_sdf) +
+tm_polygons("white", lty = "blank") +
+tm_shape(car_ownership_sdf) +
+tm_polygons(
+  col = "car_owners", alpha = 0.2, n = 7, style = "quantile",
+  palette = "Reds", border.col = "white",lty = "blank",
+  title = "% Car Ownership"
+) + 
+# Adding station points
+tm_shape(london_stations) + 
+tm_dots(col = "blue", size=0.02, alpha = 0.8)
+
+```
+
+When dealing with point layers, we could also perform interesting point layer techniques such as buffer, showing a certain buffer around an area. In this case, we set buffer to 1km, which is a reasonable walking distance for a person to walk back home after taking train.
+So in this map we notice areas near train stations do not exhibit a clear relationship with car ownership in the area. It is more related to how close it is to city centre (ie where the activities are happening). This suggests that we cannot just build more train stations to reduce reliance on cars! Instead, polycentricity of town centres is needed.
+
+```{r fig.width=10}
+ldn_1km_buffer <- london_stations %>%
+  st_buffer(dist = 1000) %>%
+  st_union()
+
+# Adding basemap
+tm_shape(car_ownership_sdf) +
+tm_polygons("white", lty = "blank") +
+tm_shape(car_ownership_sdf) +
+tm_polygons(
+  col = "car_owners", alpha = 0.4, n = 7, style = "quantile",
+  palette = "Reds", border.col = "white",lty = "blank",
+  title = "% Car Ownership"
+) +
+# Adding station points
+tm_shape(london_stations) + 
+tm_dots(col = "blue", size=0.02) +
+# Adding buffers
+tm_shape(ldn_1km_buffer) +
+tm_polygons(col="blue", lty = 'blank', alpha=0.1)+
+tm_layout(
+  frame = FALSE,
+  main.title = "Buffers For Newham Train/Tube Stations",
+  main.title.fontface = 2,
+  fontfamily = "Helvetica",
+  legend.outside = TRUE,
+  legend.position = c("left", "top"),
+  legend.title.size = 0.8,
+  legend.title.fontface = 2
+) +
+# add North arrow
+tm_compass(
+  type = "arrow",
+  position = c("left", "top")
+) +
+# add scale bar
+tm_scale_bar(
+  breaks = c(0, 0.5, 1, 1.5),
+  position = c("left", "bottom")
+)
+```
+
+<!-- With point layer, we can also do more cool stuff, for example, we can count the number of points within a geometry -->
+<!-- ```{r fig.width=10} -->
+
+<!-- ldn_400m_buffer <- london_stations %>% -->
+<!--   st_buffer(dist = 400) %>% -->
+<!--   st_union() |> -->
+<!--   # convert into BNG -->
+<!--   st_transform(27700) -->
+
+<!-- # we are looking at just bike theft -->
+<!-- bike_theft_2019 <- read_csv("crime_all_2019_london.csv") |> -->
+<!--   # clean names with janitor -->
+<!--   clean_names() %>% -->
+<!--   # filter according to crime type and ensure we have no NAs in our dataset -->
+<!--   filter(crime_type == "Bicycle theft" & !is.na(longitude) & !is.na(latitude)) |> -->
+<!--   # select just the longitude and latitude columns -->
+<!--   dplyr::select(longitude, latitude) %>% -->
+<!--   # transform into a point spatial dataframe -->
+<!--   # note providing the columns as the coordinates to use -->
+<!--   # plus the CRS, which as our columns are long/lat is WGS84/4236 -->
+<!--   st_as_sf(coords = c("longitude", "latitude"), crs = 4236) |> -->
+<!--   # convert into BNG -->
+<!--   st_transform(27700) |> -->
+<!--   st_intersection(car_ownership_sdf) -->
+<!-- ``` -->
+
+## 3. Spatial Autocorrelation (1.5min)
+We show some capabilities of geomapping using the example of spatial autocorrelation. Spatially, we assume that places near each other have spatial interactions and therefore show 'correlation/similarity' in the target feature. 
+
+In this demo, we use Getis-Ord Gi Statistics on percentage of people using Sustainable Methods Of Transportation. This test identifies hotspots and coldspots, which are statistically significant clusters of features with high and low z-scores respectively. The Queen contiguity is used because when neighbourhoods share a common boundary, spatial interactions (and similarities) increase.
+
+```{r}
+# Creating "sustainable" & "nsustainable" aggregate categories
+method_of_travel$nsustainable <- rowSums(method_of_travel[ ,c("taxi", "motorcycle", "car","passenger_in_car")])
+method_of_travel$sustainable <- rowSums(method_of_travel[ , c("tube", "train", "bus", "bicycle", "on_foot")])
+
+# Cleaning up  (mtw in short for method of travel to work)
+mtw_df <- method_of_travel |>
+  dplyr::select(area_name, area_code, nsustainable, sustainable) |>
+  clean_names() 
+
+# Merging method_of_travel df to lsoa sdf for analysis
+mtw_sdf <- merge(lsoa_shp, mtw_df, by.x = "LSOA21CD",
+                 by.y = "area_code") 
+
+# Creating a neighbours list based on queen neighbour definition
+mtw_neighbours_queen <- poly2nb(mtw_sdf, queen = TRUE)
+
+# Creating a neighbours weights list
+lsoa_spatial_weights_queen <- nb2listw(mtw_neighbours_queen, style = "C")
+
+# Running local Gi* test on our data
+sustainable_LGO <- mtw_sdf |>
+  pull(sustainable) |>
+  as.vector()
+
+sustainable_LGO <- localG(sustainable_LGO, lsoa_spatial_weights_queen)
+
+# join the local Gi* statistic to `mtw_sdf` spatial dataframe
+mtw_LGO_sdf <- mtw_sdf |>
+  mutate(sustainable_LGO_G = as.numeric(sustainable_LGO))
+```
+
+
+```{r}
+# create a colour palette
+GIColours <- rev(brewer.pal(8, "RdBu"))
+
+tmap_mode("plot")
+# plot the clusters
+getis_plot <- tm_shape(mtw_LGO_sdf) +
+  tm_polygons("sustainable_LGO_G",
+              style = "pretty", palette = GIColours,
+              midpoint = 0, lty = "blank", title = "Local Gi* statistic"
+  ) +
+  # # Highlight on certain target boroughs
+  # tm_shape(target_boroughs_shp) +
+  # tm_polygons(alpha = 0, lwd = 1, border.col = "black") +
+  tm_layout(
+    frame = FALSE,
+    main.title = "Hot/Coldspot Map of Sustainable Travel to Work, 2021",
+    main.title.fontface = 2, fontfamily = "Helvetica",
+    legend.outside = TRUE,
+    legend.position = c("left","top"),
+    legend.title.size = 1,
+    legend.title.fontface = 2
+  ) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar(breaks = c(0, 5, 10, 15, 20), position = c("left", "bottom"))
+
+getis_plot
+```
